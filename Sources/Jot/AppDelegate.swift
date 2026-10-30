@@ -104,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let hosting = NSHostingController(rootView: SettingsView())
+        let hosting = NSHostingController(rootView: SettingsView(store: store))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Jot Settings"
         window.styleMask = [.titled, .closable]

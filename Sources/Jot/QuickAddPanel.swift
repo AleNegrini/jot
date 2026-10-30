@@ -3,16 +3,16 @@ import SwiftUI
 
 /// A borderless, floating Spotlight-style panel for the quick-add flow.
 ///
-/// Triggered by the global quick-add hotkey. Shows a single text field
-/// centered on screen. Return saves the item and KEEPS the panel open with a
+/// Triggered by the global quick-add hotkey. Shows a single text field plus a
+/// category picker. Return saves the item and KEEPS the panel open with a
 /// cleared field (multi-add), Esc closes it.
 @MainActor
 final class QuickAddPanel {
     private var panel: NSPanel?
     private let store: TodoStore
 
-    private let width: CGFloat = 580
-    private let height: CGFloat = 96
+    private let width: CGFloat = 620
+    private let height: CGFloat = 150
 
     init(store: TodoStore) {
         self.store = store
@@ -50,8 +50,9 @@ final class QuickAddPanel {
         panel.isReleasedWhenClosed = false
 
         let root = QuickAddView(
-            onSubmit: { [weak self] text in
-                self?.store.add(text)
+            store: store,
+            onSubmit: { [weak self] text, categoryId in
+                self?.store.add(text, categoryId: categoryId)
             },
             onCancel: { [weak self] in
                 self?.close()
@@ -83,55 +84,104 @@ final class QuickAddPanel {
     }
 }
 
-/// The SwiftUI content of the quick-add panel.
+/// The SwiftUI content of the quick-add panel, styled after Raycast.
 ///
 /// Return adds the current text and clears the field for the next item without
 /// closing (multi-add). A small counter + checkmark flash confirm each add.
-/// Esc closes the panel.
+/// Esc closes the panel. A category chip row lets the user tag the item; the
+/// last-used category is remembered for the session.
 private struct QuickAddView: View {
-    let onSubmit: (String) -> Void
+    @ObservedObject var store: TodoStore
+    let onSubmit: (String, UUID?) -> Void
     let onCancel: () -> Void
 
     @State private var text: String = ""
+    @State private var selectedCategoryId: UUID? = nil
     @State private var addedCount: Int = 0
     @State private var flash: Bool = false
     @FocusState private var focused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            // Input row.
+            HStack(spacing: 14) {
                 Image(systemName: "square.and.pencil")
-                    .font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(selectedColor ?? .secondary)
 
                 TextField("Jot something down…", text: $text)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 22, weight: .regular))
+                    .font(.system(size: 24, weight: .regular))
                     .focused($focused)
                     .onSubmit(submit)
                     .onExitCommand(perform: onCancel)
 
                 if flash {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 20))
+                        .font(.system(size: 22))
                         .foregroundStyle(.green)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .padding(.horizontal, 20)
-            .frame(maxHeight: .infinity)
+            .padding(.horizontal, 22)
+            .padding(.top, 20)
+            .padding(.bottom, 14)
+
+            Divider().opacity(0.4)
+
+            categoryBar
+
+            Divider().opacity(0.4)
 
             hintBar
         }
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(.ultraThinMaterial)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(.white.opacity(0.10), lineWidth: 1)
         )
         .onAppear { focused = true }
+    }
+
+    private var selectedColor: Color? {
+        store.category(for: selectedCategoryId)?.color
+    }
+
+    private var categoryBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                CategoryChip(
+                    label: "None",
+                    color: .secondary,
+                    selected: selectedCategoryId == nil,
+                    filled: false
+                ) {
+                    selectedCategoryId = nil
+                }
+
+                ForEach(store.categories) { category in
+                    CategoryChip(
+                        label: category.name,
+                        color: category.color,
+                        selected: selectedCategoryId == category.id,
+                        filled: true
+                    ) {
+                        selectedCategoryId = category.id
+                    }
+                }
+
+                if store.categories.isEmpty {
+                    Text("Create categories in Settings")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+        }
     }
 
     private var hintBar: some View {
@@ -152,14 +202,14 @@ private struct QuickAddView: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 9)
     }
 
     private func submit() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        onSubmit(trimmed)
+        onSubmit(trimmed, selectedCategoryId)
         text = ""
         withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) {
             addedCount += 1
@@ -170,6 +220,46 @@ private struct QuickAddView: View {
             try? await Task.sleep(nanoseconds: 700_000_000)
             withAnimation(.easeOut(duration: 0.2)) { flash = false }
         }
+    }
+}
+
+/// A selectable, colored category chip for the quick-add picker.
+private struct CategoryChip: View {
+    let label: String
+    let color: Color
+    let selected: Bool
+    let filled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if filled {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                }
+                Text(label)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(
+                    selected
+                        ? (filled ? color.opacity(0.22) : Color.secondary.opacity(0.18))
+                        : Color.primary.opacity(0.05)
+                )
+            )
+            .overlay(
+                Capsule().stroke(
+                    selected ? (filled ? color : Color.secondary) : .clear,
+                    lineWidth: 1
+                )
+            )
+            .foregroundStyle(selected && filled ? color : .primary)
+        }
+        .buttonStyle(.plain)
     }
 }
 
